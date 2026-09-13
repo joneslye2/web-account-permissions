@@ -20,8 +20,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps || true
+
       - name: Run unit tests
-        run: npm run test:run
+        run: npm run test:unit
 
       - name: Build app
         run: npm run build
+
+      - name: Run UI happy-path (if PREVIEW_URL available)
+        if: ${{ secrets.PREVIEW_URL }}
+        run: |
+          echo "Running Playwright e2e against $PREVIEW_URL"
+          npx playwright test --config=playwright.config.ts
+        env:
+          PREVIEW_URL: ${{ secrets.PREVIEW_URL }}
