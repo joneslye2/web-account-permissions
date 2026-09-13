@@ -30,9 +30,10 @@ jobs:
         run: npm run build
 
       - name: Compute preview env and post PR comment with preview URL
+        if: ${{ github.event_name == 'pull_request' }}
         id: post_preview
         run: |
-          PR_NUMBER=${GITHUB_REF##*/}
+          PR_NUMBER=${{ github.event.pull_request.number }}
           PREVIEW_ENV="${BASE_APP_NAME}-${PR_ENV_PREFIX}${PR_NUMBER}"
           if [ -n "${{ secrets.PREVIEW_BASE_HOST }}" ]; then
             PREVIEW_URL="https://${PREVIEW_ENV}.${{ secrets.PREVIEW_BASE_HOST }}"
@@ -49,9 +50,6 @@ jobs:
         env:
           BASE_APP_NAME: ${{ env.BASE_APP_NAME }}
           PR_ENV_PREFIX: ${{ env.PR_ENV_PREFIX }}
-          GITHUB_REF: ${{ github.ref }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run UI happy-path (if PREVIEW_URL available)
