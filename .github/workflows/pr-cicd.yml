@@ -7,6 +7,12 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      BASE_APP_NAME: avp
+      AWS_REGION: us-east-1
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -29,34 +35,91 @@ jobs:
       - name: Build app
         run: npm run build
 
-      - name: Compute preview env and post PR comment with preview URL
+      - name: Get PR number
         if: ${{ github.event_name == 'pull_request' }}
-        id: post_preview
+        id: pr_info
         run: |
           PR_NUMBER=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
-          PREVIEW_ENV="${BASE_APP_NAME}-${PR_ENV_PREFIX}${PR_NUMBER}"
-          if [ -n "${{ secrets.PREVIEW_BASE_HOST }}" ]; then
-            PREVIEW_URL="https://${PREVIEW_ENV}.${{ secrets.PREVIEW_BASE_HOST }}"
-          else
-            PREVIEW_URL="https://${PREVIEW_ENV}.preview.example.com"
-          fi
+          echo "PR_NUMBER=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
 
-          # Post comment to PR with the preview URL
+      - name: Configure AWS credentials (assume OIDC role)
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Remote state is configured in terraform/main/backend.tf (hardcoded)
+
+      - name: Setup Terraform
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform create ECR repo
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          PR_NUMBER=${{ steps.pr_info.outputs.PR_NUMBER }}
+          cd terraform/main
+          terraform init -input=false -backend-config="key=state/global/main.tfstate"
+          terraform apply -auto-approve -input=false -target=aws_ecr_repository.repo \
+            -var="env_type=global" -var="env_id=main" -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}"
+          REPO_URL=$(terraform output -raw repository_url)
+          echo "REPO_URL=$REPO_URL" >> "$GITHUB_OUTPUT"
+        id: terraform_repo
+        env:
+          BASE_APP_NAME: ${{ env.BASE_APP_NAME }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+
+      - name: Build and push Docker image to ECR
+        if: ${{ github.event_name == 'pull_request' }}
+        id: build_and_push
+        run: |
+          PR_NUMBER=${{ steps.pr_info.outputs.PR_NUMBER }}
+          REPO_URL=${{ steps.terraform_repo.outputs.REPO_URL }}
+          IMAGE_TAG=pr-${PR_NUMBER}
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin ${REPO_URL%/*}
+          docker build -t ${REPO_URL}:${IMAGE_TAG} .
+          docker push ${REPO_URL}:${IMAGE_TAG}
+          echo "IMAGE_URI=${REPO_URL}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+
+      - name: Terraform create App Runner service
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          PR_NUMBER=${{ steps.pr_info.outputs.PR_NUMBER }}
+          IMAGE_URI=${{ steps.build_and_push.outputs.IMAGE_URI }}
+          cd terraform/main
+          terraform init -input=false -backend-config="key=state/prs/pr-${PR_NUMBER}.tfstate"
+          terraform apply -auto-approve -input=false -var="env_type=pr" -var="env_id=pr-${PR_NUMBER}" -var="image_identifier=${IMAGE_URI}" -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}"
+          PREVIEW_URL=$(terraform output -raw preview_url)
+          echo "PREVIEW_URL=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
+        id: terraform_apply
+        env:
+          BASE_APP_NAME: ${{ env.BASE_APP_NAME }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+        # note: IMAGE_URI is pulled from previous step outputs
+
+      - name: Post PR comment with preview URL
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          PR_NUMBER=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
+          PREVIEW_URL=${{ steps.terraform_apply.outputs.PREVIEW_URL }}
           BODY=$(jq -nc --arg url "$PREVIEW_URL" '{body: ("Preview environment: " + $url)}')
           curl -s -S -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -H "Content-Type: application/json" \
             -d "$BODY" "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" >/dev/null
-
-          echo "PREVIEW_URL=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
         env:
-          BASE_APP_NAME: ${{ env.BASE_APP_NAME }}
-          PR_ENV_PREFIX: ${{ env.PR_ENV_PREFIX }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
 
       - name: Run UI happy-path (if PREVIEW_URL available)
-        if: ${{ steps.post_preview.outputs.PREVIEW_URL }}
+        if: ${{ steps.terraform_apply.outputs.PREVIEW_URL }}
         run: |
           echo "Running Playwright e2e against $PREVIEW_URL"
           npx playwright test --config=playwright.config.ts
         env:
-          PREVIEW_URL: ${{ steps.post_preview.outputs.PREVIEW_URL }}
+          PREVIEW_URL: ${{ steps.terraform_apply.outputs.PREVIEW_URL }}

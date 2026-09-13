@@ -3,13 +3,14 @@ provider "aws" {
 }
 
 locals {
-  repo_owner = "joneslye2"
-  repo_name  = "web-account-permissions"
-
+  # fixed prefix for uniqueness per request
+  owner_prefix = "joneslye2-avp"
   oidc_subjects = [
-    "repo:${local.repo_owner}/${local.repo_name}:ref:refs/heads/main",
-    "repo:${local.repo_owner}/${local.repo_name}:pull_request",
+    "repo:joneslye2/web-account-permissions:ref:refs/heads/main",
+    "repo:joneslye2/web-account-permissions:pull_request",
   ]
+  state_bucket_name = "${local.owner_prefix}-terraform-state"
+  ddb_table_name     = "${local.owner_prefix}-terraform-locks"
 }
 
 resource "aws_iam_openid_connect_provider" "github_actions" {
@@ -42,6 +43,7 @@ resource "aws_iam_role" "github_oidc_role" {
       }
     ]
   })
+
   tags = var.common_tags
 }
 
@@ -49,7 +51,7 @@ resource "aws_iam_policy" "deploy_policy" {
   name = "github-actions-deploy-policy"
 
   policy = jsonencode({
-    Version = "2012-10-17"
+    Version = "2012-10-17",
     Statement = [
       {
         Effect = "Allow",
@@ -72,7 +74,10 @@ resource "aws_iam_policy" "deploy_policy" {
           "iam:PassRole",
 
           "ssm:GetParameter",
-          "ssm:PutParameter"
+          "ssm:PutParameter",
+
+          "ecr:*",
+          "apprunner:*"
         ],
         Resource = "*"
       }
@@ -81,12 +86,57 @@ resource "aws_iam_policy" "deploy_policy" {
 }
 
 
-
 resource "aws_iam_role_policy_attachment" "github_oidc_attach" {
   role       = aws_iam_role.github_oidc_role.name
   policy_arn = aws_iam_policy.deploy_policy.arn
 }
 
+# Backend state bucket for Terraform remote state
+resource "aws_s3_bucket" "tf_state" {
+  bucket = local.state_bucket_name
+
+  server_side_encryption_configuration {
+    rule {
+      apply_server_side_encryption_by_default {
+        sse_algorithm = "AES256"
+      }
+    }
+  }
+
+  tags = merge(var.common_tags, { Name = local.state_bucket_name })
+}
+
+resource "aws_s3_bucket_public_access_block" "state_block" {
+  bucket = aws_s3_bucket.tf_state.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# DynamoDB table for Terraform state locking
+resource "aws_dynamodb_table" "tf_locks" {
+  name         = local.ddb_table_name
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "LockID"
+
+  attribute {
+    name = "LockID"
+    type = "S"
+  }
+
+  tags = merge(var.common_tags, { Name = local.ddb_table_name })
+}
+
 output "role_arn" {
   value = aws_iam_role.github_oidc_role.arn
+}
+
+output "state_bucket" {
+  value = aws_s3_bucket.tf_state.bucket
+}
+
+output "dynamodb_table" {
+  value = aws_dynamodb_table.tf_locks.name
 }

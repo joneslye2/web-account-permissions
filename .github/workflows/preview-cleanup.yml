@@ -1,0 +1,60 @@
+name: Preview cleanup
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == false || github.event.pull_request.merged == true
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (assume OIDC role)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Compute PR info and repo name
+        id: info
+        run: |
+          PR_NUMBER=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
+          NAME_PREFIX=$(echo "avp" | tr '[:upper:]' '[:lower:]' | sed 's/_/-/g')
+          REPO_NAME="${NAME_PREFIX}-previews"
+          echo "PR_NUMBER=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "REPO_NAME=$REPO_NAME" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+      - name: Compute Terraform remote state names
+        id: tfstate_info
+        run: |
+          NAME_PREFIX=$(echo "avp" | tr '[:upper:]' '[:lower:]' | sed 's/_/-/g')
+          TF_STATE_BUCKET="${NAME_PREFIX}-terraform-state"
+          TF_DDB_TABLE="${NAME_PREFIX}-terraform-locks"
+          echo "TF_STATE_BUCKET=$TF_STATE_BUCKET" >> "$GITHUB_OUTPUT"
+          echo "TF_DDB_TABLE=$TF_DDB_TABLE" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform destroy preview (App Runner)
+        run: |
+          PR_NUMBER=${{ steps.info.outputs.PR_NUMBER }}
+          REPO_NAME=${{ steps.info.outputs.REPO_NAME }}
+          TF_STATE_BUCKET=${{ steps.tfstate_info.outputs.TF_STATE_BUCKET }}
+          TF_DDB_TABLE=${{ steps.tfstate_info.outputs.TF_DDB_TABLE }}
+          cd terraform/main
+          terraform init -input=false -backend-config="key=state/prs/pr-${PR_NUMBER}.tfstate" || true
+          terraform destroy -auto-approve -input=false \
+            -var="env_type=pr" \
+            -var="env_id=pr-${PR_NUMBER}" \
+            -var="image_identifier=${REPO_NAME}:pr-${PR_NUMBER}" \
+            -var="base_app_name=avp" \
+            -var="aws_region=us-east-1" || true
+
+      - name: Delete ECR image
+        run: |
+          PR_NUMBER=${{ steps.info.outputs.PR_NUMBER }}
+          REPO_NAME=${{ steps.info.outputs.REPO_NAME }}
+          aws ecr batch-delete-image --repository-name "${REPO_NAME}" --image-ids imageTag=pr-${PR_NUMBER} || true
