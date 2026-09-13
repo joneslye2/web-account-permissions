@@ -1,11 +1,8 @@
-name: Deploy
+name: Main Deploy
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
 
 permissions:
   id-token: write
@@ -55,16 +52,10 @@ jobs:
       - name: Set environment name
         id: envname
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "value=${{ env.BASE_APP_NAME }}-${{ env.PR_ENV_PREFIX }}${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=${{ env.PROD_ENV_NAME }}" >> "$GITHUB_OUTPUT"
-          fi
+          echo "value=${{ env.PROD_ENV_NAME }}" >> "$GITHUB_OUTPUT"
 
       - name: Show environment summary
         run: |
           echo "Environment: ${{ steps.envname.outputs.value }}"
           echo "Web app client id (prod): a4c33926-3866-4824-a980-1b5c6faea83d"
-          echo "Web app client id (pr/shared): 671e9818-dea5-4b0d-ac43-7eaf5470894d"
           echo "Claims app client id (prod): 7435fe37-9648-427f-b315-bb33a0255e38"
-          echo "Claims app client id (pr/shared): 32fc7260-4202-462d-a80d-33db2605073c"
