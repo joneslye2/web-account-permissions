@@ -59,4 +59,4 @@ jobs:
           echo "Running Playwright e2e against $PREVIEW_URL"
           npx playwright test --config=playwright.config.ts
         env:
-          PREVIEW_URL: ${{ secrets.PREVIEW_URL }}
+          PREVIEW_URL: ${{ steps.post_preview.outputs.PREVIEW_URL }}
