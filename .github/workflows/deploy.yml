@@ -1,0 +1,70 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-west-2
+  BASE_APP_NAME: web-account-permissions
+  PROD_ENV_NAME: prod
+  PR_ENV_PREFIX: pr
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm run test:run
+
+      - name: Build app
+        run: npm run build
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::021685463033:role/matthew-avp-github-oidc-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set environment name
+        id: envname
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "value=${{ env.BASE_APP_NAME }}-${{ env.PR_ENV_PREFIX }}${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ env.PROD_ENV_NAME }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Show environment summary
+        run: |
+          echo "Environment: ${{ steps.envname.outputs.value }}"
+          echo "Web app client id (prod): a4c33926-3866-4824-a980-1b5c6faea83d"
+          echo "Web app client id (pr/shared): 671e9818-dea5-4b0d-ac43-7eaf5470894d"
+          echo "Claims app client id (prod): 7435fe37-9648-427f-b315-bb33a0255e38"
+          echo "Claims app client id (pr/shared): 32fc7260-4202-462d-a80d-33db2605073c"

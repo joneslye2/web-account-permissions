@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.vite/
+coverage/
+.env
+.env.*
+.DS_Store
+
+# Terraform local and state
+terraform/**/.terraform
+terraform/**/terraform.tfstate
+terraform/**/terraform.tfstate.backup
+terraform/**/tfplan
+terraform/**/awscliv2.zip
