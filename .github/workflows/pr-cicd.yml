@@ -12,7 +12,7 @@ jobs:
       contents: read
     env:
       BASE_APP_NAME: avp
-      AWS_REGION: us-east-1
+      AWS_REGION: eu-west-2
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -20,7 +20,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -44,9 +44,33 @@ jobs:
         env:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
 
+      - name: Expose and validate AWS role and region
+        if: ${{ github.event_name == 'pull_request' }}
+        id: expose_envs
+        run: |
+          ROLE="${{ secrets.AWS_ROLE_ARN }}"
+          REGION="${{ env.AWS_REGION }}"
+          echo "AWS_ROLE_ARN=$ROLE" >> "$GITHUB_OUTPUT"
+          echo "AWS_REGION=$REGION" >> "$GITHUB_OUTPUT"
+
+          case "$ROLE" in
+            arn:aws:iam:*) ;;
+            *)
+              echo "ERROR: AWS_ROLE_ARN does not start with 'arn:aws:iam:' (got: $ROLE)" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ "$REGION" != "eu-west-2" ]; then
+            echo "ERROR: AWS_REGION is not 'eu-west-2' (got: $REGION)" >&2
+            exit 1
+          fi
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+
       - name: Configure AWS credentials (assume OIDC role)
         if: ${{ github.event_name == 'pull_request' }}
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
