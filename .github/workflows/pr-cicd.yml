@@ -54,7 +54,7 @@ jobs:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
 
       - name: Run UI happy-path (if PREVIEW_URL available)
-        if: ${{ secrets.PREVIEW_URL }}
+        if: ${{ steps.post_preview.outputs.PREVIEW_URL }}
         run: |
           echo "Running Playwright e2e against $PREVIEW_URL"
           npx playwright test --config=playwright.config.ts
