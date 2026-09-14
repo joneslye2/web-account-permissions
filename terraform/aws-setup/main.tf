@@ -108,11 +108,16 @@ resource "aws_iam_policy" "deploy_policy" {
         Action = [
           "iam:CreateRole",
           "iam:GetRole",
+          "iam:DeleteRole",
           "iam:TagRole",
+          "iam:UntagRole",
           "iam:AttachRolePolicy",
           "iam:DetachRolePolicy",
           "iam:ListAttachedRolePolicies",
-          "iam:ListRolePolicies"
+          "iam:ListRolePolicies",
+          "iam:PutRolePolicy",
+          "iam:DeleteRolePolicy",
+          "iam:ListInstanceProfilesForRole"
         ],
         Resource = "arn:aws:iam::*:role/avp-apprunner-ecr-access"
       }
