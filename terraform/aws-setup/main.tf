@@ -102,6 +102,18 @@ resource "aws_iam_policy" "deploy_policy" {
             "iam:AWSServiceName" = "apprunner.amazonaws.com"
           }
         }
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "iam:CreateRole",
+          "iam:GetRole",
+          "iam:TagRole",
+          "iam:AttachRolePolicy",
+          "iam:DetachRolePolicy",
+          "iam:ListAttachedRolePolicies"
+        ],
+        Resource = "arn:aws:iam::*:role/avp-apprunner-ecr-access"
       }
     ]
   })

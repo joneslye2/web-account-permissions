@@ -26,6 +26,12 @@ variable "image_identifier" {
   default     = ""
 }
 
+variable "access_role_arn" {
+  type        = string
+  description = "Role ARN App Runner assumes to pull images from the private ECR repo"
+  default     = ""
+}
+
 variable "common_tags" {
   type = map(string)
   default = {
