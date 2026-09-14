@@ -82,6 +82,16 @@ resource "aws_iam_policy" "deploy_policy" {
           "apprunner:*"
         ],
         Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:DescribeTable"
+        ],
+        Resource = aws_dynamodb_table.tf_locks.arn
       }
     ]
   })
