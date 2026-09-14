@@ -43,6 +43,5 @@ output "repository_url" {
 
 output "preview_url" {
   description = "App Runner service URL for the preview"
-  value       = aws_apprunner_service.app[0].service_url
-  condition   = length(aws_apprunner_service.app) > 0
+  value       = one(aws_apprunner_service.app[*].service_url)
 }

@@ -27,6 +27,11 @@ variable "image_identifier" {
 }
 
 variable "common_tags" {
-  type    = map(string)
-  default = {}
+  type = map(string)
+  default = {
+    Project   = "web-account-permissions"
+    Owner     = "joneslye2"
+    ManagedBy = "terraform"
+    Increment = "1"
+  }
 }
