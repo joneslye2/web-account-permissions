@@ -119,7 +119,7 @@ jobs:
           PR_NUMBER=${{ steps.pr_info.outputs.PR_NUMBER }}
           IMAGE_URI=${{ steps.build_and_push.outputs.IMAGE_URI }}
           cd terraform/main
-          terraform init -input=false -backend-config="key=state/prs/pr-${PR_NUMBER}.tfstate"
+          terraform init -input=false -reconfigure -backend-config="key=state/prs/pr-${PR_NUMBER}.tfstate"
           terraform apply -auto-approve -input=false -var="env_type=pr" -var="env_id=pr-${PR_NUMBER}" -var="image_identifier=${IMAGE_URI}" -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}"
           PREVIEW_URL=$(terraform output -raw preview_url)
           echo "PREVIEW_URL=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
