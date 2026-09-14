@@ -92,6 +92,16 @@ resource "aws_iam_policy" "deploy_policy" {
           "dynamodb:DescribeTable"
         ],
         Resource = aws_dynamodb_table.tf_locks.arn
+      },
+      {
+        Effect   = "Allow",
+        Action   = "iam:CreateServiceLinkedRole",
+        Resource = "arn:aws:iam::*:role/aws-service-role/apprunner.amazonaws.com/AWSServiceRoleForAppRunner",
+        Condition = {
+          StringEquals = {
+            "iam:AWSServiceName" = "apprunner.amazonaws.com"
+          }
+        }
       }
     ]
   })
