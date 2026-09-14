@@ -6,8 +6,10 @@ locals {
   # fixed prefix for uniqueness per request
   owner_prefix = "joneslye2-avp"
   oidc_subjects = [
-    "repo:joneslye2/web-account-permissions:ref:refs/heads/main",
-    "repo:joneslye2/web-account-permissions:pull_request",
+    "repo:joneslye2/web-account-permissions:*",
+    # Support token `sub` that includes owner/repo numeric IDs, e.g.
+    # repo:joneslye2@73744792/web-account-permissions@1367230886:pull_request
+    "repo:joneslye2@*/web-account-permissions@*:*",
   ]
   state_bucket_name = "${local.owner_prefix}-terraform-state"
   ddb_table_name     = "${local.owner_prefix}-terraform-locks"

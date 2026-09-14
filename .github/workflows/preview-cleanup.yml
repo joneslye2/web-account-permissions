@@ -17,7 +17,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v2
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-1
+          aws-region: eu-west-2
 
       - name: Compute PR info and repo name
         id: info
@@ -51,7 +51,7 @@ jobs:
             -var="env_id=pr-${PR_NUMBER}" \
             -var="image_identifier=${REPO_NAME}:pr-${PR_NUMBER}" \
             -var="base_app_name=avp" \
-            -var="aws_region=us-east-1" || true
+            -var="aws_region=eu-west-2" || true
 
       - name: Delete ECR image
         run: |
