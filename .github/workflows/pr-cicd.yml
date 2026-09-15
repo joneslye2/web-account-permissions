@@ -131,14 +131,15 @@ jobs:
           # App Runner auto-deploys on ECR push (auto_deployments_enabled), which can
           # race with this apply and leave the service OPERATION_IN_PROGRESS for a
           # short window. Retry on that specific transient state.
-          for attempt in 1 2 3 4 5 6; do
+          MAX_ATTEMPTS=12
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
             if terraform apply -auto-approve -input=false -target=aws_apprunner_service.app -var="env_type=pr" -var="env_id=pr-${PR_NUMBER}" -var="image_identifier=${IMAGE_URI}" -var="access_role_arn=${ACCESS_ROLE_ARN}" -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}" 2>&1 | tee /tmp/tf_apply.log; then
               break
             fi
-            if [ "$attempt" -eq 6 ] || ! grep -q "OPERATION_IN_PROGRESS" /tmp/tf_apply.log; then
+            if [ "$attempt" -eq "$MAX_ATTEMPTS" ] || ! grep -q "OPERATION_IN_PROGRESS" /tmp/tf_apply.log; then
               exit 1
             fi
-            echo "App Runner service busy (OPERATION_IN_PROGRESS), retrying in 30s (attempt ${attempt}/6)..."
+            echo "App Runner service busy (OPERATION_IN_PROGRESS), retrying in 30s (attempt ${attempt}/${MAX_ATTEMPTS})..."
             sleep 30
           done
 
