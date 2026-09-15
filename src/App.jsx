@@ -1,17 +1,13 @@
-import { computeAuthState } from './auth';
-
-export default function App({ user = null }) {
-  const authState = computeAuthState(user);
-
+export default function App({ authState, onLogin, onLogout }) {
   return (
     <div style={styles.page}>
       <header style={styles.header}>
         <h1>Submission App</h1>
         <div>
           {!authState.isAuthenticated ? (
-            <button type="button">Login</button>
+            <button type="button" onClick={onLogin}>Login</button>
           ) : (
-            <button type="button">Logout</button>
+            <button type="button" onClick={onLogout}>Logout</button>
           )}
         </div>
       </header>
@@ -20,7 +16,7 @@ export default function App({ user = null }) {
         {!authState.isAuthenticated ? (
           <section aria-live="polite" style={styles.statusBox}>
             <strong>Sign in required</strong>
-            <p>Please sign in to continue.</p>
+            <p>{authState.message}</p>
           </section>
         ) : (
           <>
