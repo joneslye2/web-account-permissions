@@ -1,9 +1,12 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './App';
+import AuthenticatedApp from './AuthenticatedApp';
+import { initializeMsal } from './msalClient';
 
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+initializeMsal().finally(() => {
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <AuthenticatedApp />
+    </React.StrictMode>
+  );
+});
