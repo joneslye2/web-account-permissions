@@ -14,6 +14,8 @@ jobs:
     env:
       BASE_APP_NAME: avp
       AWS_REGION: eu-west-2
+      AZURE_TENANT_ID: 6255c754-e30b-4758-bad0-d9051e73013b
+      AZURE_NON_PROD_WEB_APP_CLIENT_ID: 671e9818-dea5-4b0d-ac43-7eaf5470894d
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -150,6 +152,32 @@ jobs:
           BASE_APP_NAME: ${{ env.BASE_APP_NAME }}
           AWS_REGION: ${{ env.AWS_REGION }}
         # note: IMAGE_URI is pulled from previous step outputs
+
+      - name: Azure login (OIDC, for Entra redirect URI automation)
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_GRAPH_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Register PR preview redirect URI in Entra
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          PREVIEW_URL=${{ steps.terraform_apply.outputs.PREVIEW_URL }}
+          OBJECT_ID=$(az rest --method GET \
+            --url "https://graph.microsoft.com/v1.0/applications?\$filter=appId eq '${WEB_APP_CLIENT_ID}'" \
+            --query "value[0].id" -o tsv)
+          CURRENT_URIS=$(az rest --method GET \
+            --url "https://graph.microsoft.com/v1.0/applications/${OBJECT_ID}" \
+            --query "spa.redirectUris" -o json)
+          NEW_URIS=$(echo "$CURRENT_URIS" | jq -c --arg url "$PREVIEW_URL" '(. // []) + [$url] | unique')
+          az rest --method PATCH \
+            --url "https://graph.microsoft.com/v1.0/applications/${OBJECT_ID}" \
+            --headers "Content-Type=application/json" \
+            --body "$(jq -nc --argjson uris "$NEW_URIS" '{spa: {redirectUris: $uris}}')"
+        env:
+          WEB_APP_CLIENT_ID: ${{ env.AZURE_NON_PROD_WEB_APP_CLIENT_ID }}
 
       - name: Post PR comment with preview URL
         if: ${{ github.event_name == 'pull_request' }}

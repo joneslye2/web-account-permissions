@@ -9,14 +9,20 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     if: github.event.pull_request.merged == false || github.event.pull_request.merged == true
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AZURE_TENANT_ID: 6255c754-e30b-4758-bad0-d9051e73013b
+      AZURE_NON_PROD_WEB_APP_CLIENT_ID: 671e9818-dea5-4b0d-ac43-7eaf5470894d
     steps:
       - name: Check out
         uses: actions/checkout@v4
 
       - name: Configure AWS credentials (assume OIDC role)
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::021685463033:role/matthew-avp-github-oidc-role
           aws-region: eu-west-2
 
       - name: Compute PR info and repo name
@@ -29,23 +35,26 @@ jobs:
           echo "REPO_NAME=$REPO_NAME" >> "$GITHUB_OUTPUT"
         env:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
-      - name: Compute Terraform remote state names
-        id: tfstate_info
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false
+
+      - name: Look up preview URL before destroy
+        id: lookup
         run: |
-          NAME_PREFIX=$(echo "avp" | tr '[:upper:]' '[:lower:]' | sed 's/_/-/g')
-          TF_STATE_BUCKET="${NAME_PREFIX}-terraform-state"
-          TF_DDB_TABLE="${NAME_PREFIX}-terraform-locks"
-          echo "TF_STATE_BUCKET=$TF_STATE_BUCKET" >> "$GITHUB_OUTPUT"
-          echo "TF_DDB_TABLE=$TF_DDB_TABLE" >> "$GITHUB_OUTPUT"
+          PR_NUMBER=${{ steps.info.outputs.PR_NUMBER }}
+          cd terraform/main
+          terraform init -input=false -reconfigure -backend-config="key=state/prs/pr-${PR_NUMBER}.tfstate" || true
+          PREVIEW_URL="https://$(terraform output -raw preview_url 2>/dev/null || true)"
+          echo "PREVIEW_URL=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
 
       - name: Terraform destroy preview (App Runner)
         run: |
           PR_NUMBER=${{ steps.info.outputs.PR_NUMBER }}
           REPO_NAME=${{ steps.info.outputs.REPO_NAME }}
-          TF_STATE_BUCKET=${{ steps.tfstate_info.outputs.TF_STATE_BUCKET }}
-          TF_DDB_TABLE=${{ steps.tfstate_info.outputs.TF_DDB_TABLE }}
           cd terraform/main
-          terraform init -input=false -backend-config="key=state/prs/pr-${PR_NUMBER}.tfstate" || true
           terraform destroy -auto-approve -input=false \
             -var="env_type=pr" \
             -var="env_id=pr-${PR_NUMBER}" \
@@ -58,3 +67,29 @@ jobs:
           PR_NUMBER=${{ steps.info.outputs.PR_NUMBER }}
           REPO_NAME=${{ steps.info.outputs.REPO_NAME }}
           aws ecr batch-delete-image --repository-name "${REPO_NAME}" --image-ids imageTag=pr-${PR_NUMBER} || true
+
+      - name: Azure login (OIDC, for Entra redirect URI automation)
+        if: ${{ steps.lookup.outputs.PREVIEW_URL != 'https://' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_GRAPH_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Deregister PR preview redirect URI in Entra
+        if: ${{ steps.lookup.outputs.PREVIEW_URL != 'https://' }}
+        run: |
+          PREVIEW_URL=${{ steps.lookup.outputs.PREVIEW_URL }}
+          OBJECT_ID=$(az rest --method GET \
+            --url "https://graph.microsoft.com/v1.0/applications?\$filter=appId eq '${WEB_APP_CLIENT_ID}'" \
+            --query "value[0].id" -o tsv)
+          CURRENT_URIS=$(az rest --method GET \
+            --url "https://graph.microsoft.com/v1.0/applications/${OBJECT_ID}" \
+            --query "spa.redirectUris" -o json)
+          NEW_URIS=$(echo "$CURRENT_URIS" | jq -c --arg url "$PREVIEW_URL" '[.[] | select(. != $url)]')
+          az rest --method PATCH \
+            --url "https://graph.microsoft.com/v1.0/applications/${OBJECT_ID}" \
+            --headers "Content-Type=application/json" \
+            --body "$(jq -nc --argjson uris "$NEW_URIS" '{spa: {redirectUris: $uris}}')"
+        env:
+          WEB_APP_CLIENT_ID: ${{ env.AZURE_NON_PROD_WEB_APP_CLIENT_ID }}
