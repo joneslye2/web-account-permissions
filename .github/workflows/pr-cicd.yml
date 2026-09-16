@@ -11,6 +11,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      pull-requests: write
     env:
       BASE_APP_NAME: avp
       AWS_REGION: eu-west-2
@@ -47,36 +48,12 @@ jobs:
         env:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
 
-      - name: Expose and validate AWS role and region
-        if: ${{ github.event_name == 'pull_request' }}
-        id: expose_envs
-        run: |
-          ROLE="${{ secrets.AWS_ROLE_ARN }}"
-          REGION="${{ env.AWS_REGION }}"
-          echo "AWS_ROLE_ARN=$ROLE" >> "$GITHUB_OUTPUT"
-          echo "AWS_REGION=$REGION" >> "$GITHUB_OUTPUT"
-
-          case "$ROLE" in
-            arn:aws:iam:*) ;;
-            *)
-              echo "ERROR: AWS_ROLE_ARN does not start with 'arn:aws:iam:' (got: $ROLE)" >&2
-              exit 1
-              ;;
-          esac
-
-          if [ "$REGION" != "eu-west-2" ]; then
-            echo "ERROR: AWS_REGION is not 'eu-west-2' (got: $REGION)" >&2
-            exit 1
-          fi
-        env:
-          AWS_REGION: ${{ env.AWS_REGION }}
-
       - name: Configure AWS credentials (assume OIDC role)
         if: ${{ github.event_name == 'pull_request' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::021685463033:role/matthew-avp-github-oidc-role
-          aws-region: eu-west-2
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
       # Remote state is configured in terraform/main/backend.tf (hardcoded)
 
@@ -179,14 +156,26 @@ jobs:
         env:
           WEB_APP_CLIENT_ID: ${{ env.AZURE_NON_PROD_WEB_APP_CLIENT_ID }}
 
-      - name: Post PR comment with preview URL
+      - name: Post or update PR comment with preview URL
         if: ${{ github.event_name == 'pull_request' }}
         run: |
           PR_NUMBER=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
           PREVIEW_URL=${{ steps.terraform_apply.outputs.PREVIEW_URL }}
-          BODY=$(jq -nc --arg url "$PREVIEW_URL" '{body: ("Preview environment: " + $url)}')
-          curl -s -S -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -H "Content-Type: application/json" \
-            -d "$BODY" "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" >/dev/null
+          MARKER="<!-- avp-preview-url-comment -->"
+          BODY=$(jq -nc --arg marker "$MARKER" --arg url "$PREVIEW_URL" '{body: ($marker + "\nPreview environment: " + $url)}')
+          API="https://api.github.com/repos/${{ github.repository }}"
+
+          EXISTING_ID=$(curl -sS -f -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
+            "${API}/issues/${PR_NUMBER}/comments" \
+            | jq -r --arg marker "$MARKER" '[.[] | select(.body | startswith($marker))][0].id // empty')
+
+          if [ -n "$EXISTING_ID" ]; then
+            curl -sS -f -X PATCH -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
+              -d "$BODY" "${API}/issues/comments/${EXISTING_ID}" >/dev/null
+          else
+            curl -sS -f -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
+              -d "$BODY" "${API}/issues/${PR_NUMBER}/comments" >/dev/null
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
