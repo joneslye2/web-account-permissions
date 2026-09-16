@@ -41,6 +41,16 @@ describe('AuthenticatedApp', () => {
     expect(mockFetchClaims).toHaveBeenCalledWith('user-1');
   });
 
+  it('shows a clear no-service-access status when claims resolve without granting access', async () => {
+    mockMsal.getActiveAccount.mockReturnValue({ localAccountId: 'user-1', name: 'Jordan' });
+    mockFetchClaims.mockResolvedValue({ serviceARoles: [], serviceBRoles: [], category: 'open' });
+
+    render(<AuthenticatedApp />);
+
+    await waitFor(() => expect(screen.getByText('No service access')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /logout/i })).toBeInTheDocument();
+  });
+
   it('shows claims_unavailable messaging when the claims fetch fails', async () => {
     mockMsal.getActiveAccount.mockReturnValue({ localAccountId: 'user-1', name: 'Jordan' });
     mockFetchClaims.mockRejectedValue(new Error('boom'));
