@@ -7,6 +7,11 @@ test('a real login completes, shows the authenticated app shell, and logout retu
   const creds = getTestCredentials();
   test.skip(!creds, 'E2E_TEST_EMAIL/E2E_TEST_PASSWORD/E2E_TEST_AUTH_SECRET not configured');
 
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') console.log(`[browser console error] ${msg.text()}`);
+  });
+  page.on('pageerror', (err) => console.log(`[browser page error] ${err.message}`));
+
   await page.goto('/');
   await loginViaEntra(page, creds!);
 
