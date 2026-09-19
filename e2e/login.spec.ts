@@ -23,8 +23,22 @@ function generateTotpCode(base32Secret: string): string {
   return totp.generate();
 }
 
+// locator.isVisible() checks the DOM *right now* and does not wait for the
+// element to appear, unlike expect(...).toBeVisible(). Using it to detect an
+// optional interstitial mid-navigation returns false immediately if the page
+// hasn't finished rendering yet, silently skipping a step that was actually
+// there a moment later. waitFor() actually polls.
+async function appears(locator: ReturnType<Page['getByRole']>, timeout: number): Promise<boolean> {
+  try {
+    await locator.waitFor({ state: 'visible', timeout });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 test('a real login completes and shows the authenticated app shell', async ({ page }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
 
   const email = process.env.E2E_TEST_EMAIL;
   const password = process.env.E2E_TEST_PASSWORD;
@@ -47,7 +61,7 @@ test('a real login completes and shows the authenticated app shell', async ({ pa
   // Software OATH token (TOTP) challenge - generate a fresh code from the
   // secret rather than storing/using any single passcode.
   const codeInput = page.getByRole('textbox', { name: /code/i });
-  if (await codeInput.isVisible({ timeout: 10_000 }).catch(() => false)) {
+  if (await appears(codeInput, 15_000)) {
     await codeInput.fill(generateTotpCode(totpSecret!));
     await page.getByRole('button', { name: /verify|sign in|next/i }).click();
     await logState(page, 'after submitting TOTP code');
@@ -56,7 +70,7 @@ test('a real login completes and shows the authenticated app shell', async ({ pa
   // Microsoft may show a "Stay signed in?" interstitial after a successful
   // sign-in - dismiss it if present, but don't fail if it's skipped.
   const staySignedIn = page.getByRole('button', { name: /^no$/i });
-  if (await staySignedIn.isVisible({ timeout: 5_000 }).catch(() => false)) {
+  if (await appears(staySignedIn, 15_000)) {
     await staySignedIn.click();
     await logState(page, 'after dismissing stay-signed-in');
   }
