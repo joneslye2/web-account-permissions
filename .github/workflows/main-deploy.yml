@@ -7,6 +7,7 @@ on:
 permissions:
   id-token: write
   contents: read
+  pull-requests: read
 
 env:
   AWS_REGION: eu-west-2
@@ -72,22 +73,40 @@ jobs:
           BASE_APP_NAME: ${{ env.BASE_APP_NAME }}
           AWS_REGION: ${{ env.AWS_REGION }}
 
-      - name: Build and push Docker image to ECR
-        id: build_and_push
+      # No rebuild: re-tag the exact image pr-cicd.yml already built and
+      # tested for the merged PR. "Trust the image tested in non-prod"
+      # only means something if prod runs the identical bytes, not a
+      # fresh build of the same source - a rebuild, even a deterministic
+      # one, is a different artifact.
+      - name: Find merged PR and promote its image
+        id: promote_image
         run: |
           REPO_URL=${{ steps.terraform_repo.outputs.REPO_URL }}
-          IMAGE_TAG=prod
-          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin ${REPO_URL%/*}
-          docker build -t ${REPO_URL}:${IMAGE_TAG} .
-          docker push ${REPO_URL}:${IMAGE_TAG}
-          echo "IMAGE_URI=${REPO_URL}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          REPO_NAME="${REPO_URL##*/}"
+
+          PR_NUMBER=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number')
+          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+            echo "No merged PR found for commit ${{ github.sha }} - nothing to promote" >&2
+            exit 1
+          fi
+          echo "Promoting image from PR #$PR_NUMBER (already built and tested by pr-cicd.yml)"
+
+          MANIFEST=$(aws ecr batch-get-image --repository-name "$REPO_NAME" --image-ids imageTag=pr-${PR_NUMBER} --query 'images[0].imageManifest' --output text)
+          if [ -z "$MANIFEST" ] || [ "$MANIFEST" = "None" ]; then
+            echo "No image found in ECR for tag pr-${PR_NUMBER}" >&2
+            exit 1
+          fi
+          aws ecr put-image --repository-name "$REPO_NAME" --image-tag prod --image-manifest "$MANIFEST" >/dev/null
+
+          echo "IMAGE_URI=${REPO_URL}:prod" >> "$GITHUB_OUTPUT"
         env:
           AWS_REGION: ${{ env.AWS_REGION }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Terraform apply production App Runner service
         run: |
           set -o pipefail
-          IMAGE_URI=${{ steps.build_and_push.outputs.IMAGE_URI }}
+          IMAGE_URI=${{ steps.promote_image.outputs.IMAGE_URI }}
           ACCESS_ROLE_ARN=${{ steps.terraform_repo.outputs.ACCESS_ROLE_ARN }}
           cd terraform/environment
           terraform init -input=false -reconfigure -backend-config="key=state/prod/main.tfstate"
