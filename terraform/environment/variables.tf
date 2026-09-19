@@ -10,26 +10,29 @@ variable "base_app_name" {
 }
 
 variable "env_type" {
-  type    = string
-  description = "Environment type: local | pr | prod"
-  default = "pr"
+  type        = string
+  description = "Environment type: pr | prod"
 }
 
 variable "env_id" {
   type        = string
-  description = "Identifier for the environment (hostname, pr-123, main)"
+  description = "Identifier for the environment (e.g. pr-123, main)"
 }
 
 variable "image_identifier" {
   type        = string
   description = "Full image identifier (ECR URI with tag) to deploy to App Runner"
-  default     = ""
 }
 
 variable "access_role_arn" {
   type        = string
   description = "Role ARN App Runner assumes to pull images from the private ECR repo"
-  default     = ""
+}
+
+variable "msal_client_id" {
+  type        = string
+  description = "Entra app registration client ID for MSAL, injected at container runtime (see Dockerfile) so the same image works unchanged across environments"
+  default     = "671e9818-dea5-4b0d-ac43-7eaf5470894d"
 }
 
 variable "common_tags" {

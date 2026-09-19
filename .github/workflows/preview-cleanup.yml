@@ -49,7 +49,7 @@ jobs:
         id: lookup
         run: |
           PR_NUMBER=${{ steps.info.outputs.PR_NUMBER }}
-          cd terraform/main
+          cd terraform/environment
           terraform init -input=false -reconfigure -backend-config="key=state/prs/pr-${PR_NUMBER}.tfstate" || true
           PREVIEW_URL="https://$(terraform output -raw preview_url 2>/dev/null || true)"
           echo "PREVIEW_URL=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
@@ -58,11 +58,15 @@ jobs:
         run: |
           PR_NUMBER=${{ steps.info.outputs.PR_NUMBER }}
           REPO_NAME=${{ steps.info.outputs.REPO_NAME }}
-          cd terraform/main
+          cd terraform/environment
+          # access_role_arn has no default (unlike msal_client_id) but its
+          # actual value doesn't matter for a destroy - only real resources
+          # in state get torn down, nothing here gets created.
           terraform destroy -auto-approve -input=false \
             -var="env_type=pr" \
             -var="env_id=pr-${PR_NUMBER}" \
             -var="image_identifier=${REPO_NAME}:pr-${PR_NUMBER}" \
+            -var="access_role_arn=arn:aws:iam::021685463033:role/avp-apprunner-ecr-access" \
             -var="base_app_name=avp" \
             -var="aws_region=eu-west-2" || true
 

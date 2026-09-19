@@ -55,7 +55,9 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Remote state is configured in terraform/main/backend.tf (hardcoded)
+      # Remote state backend (bucket/table) is hardcoded in each module's
+      # backend.tf; terraform/global's key is fixed there too, while
+      # terraform/environment's varies per environment (-backend-config below)
 
       - name: Setup Terraform
         if: ${{ github.event_name == 'pull_request' }}
@@ -63,17 +65,14 @@ jobs:
         with:
           terraform_wrapper: false
 
-      - name: Terraform create ECR repo
+      - name: Terraform apply global resources (ECR repo, ECR-access role)
         if: ${{ github.event_name == 'pull_request' }}
         run: |
           PR_NUMBER=${{ steps.pr_info.outputs.PR_NUMBER }}
-          cd terraform/main
-          terraform init -input=false -backend-config="key=state/global/main.tfstate"
+          cd terraform/global
+          terraform init -input=false
           terraform apply -auto-approve -input=false \
-            -target=aws_ecr_repository.repo \
-            -target=aws_iam_role.apprunner_ecr_access \
-            -target=aws_iam_role_policy_attachment.apprunner_ecr_access \
-            -var="env_type=global" -var="env_id=main" -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}"
+            -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}"
           REPO_URL=$(terraform output -raw repository_url)
           ACCESS_ROLE_ARN=$(terraform output -raw apprunner_ecr_access_role_arn)
           echo "REPO_URL=$REPO_URL" >> "$GITHUB_OUTPUT"
@@ -104,7 +103,7 @@ jobs:
           PR_NUMBER=${{ steps.pr_info.outputs.PR_NUMBER }}
           IMAGE_URI=${{ steps.build_and_push.outputs.IMAGE_URI }}
           ACCESS_ROLE_ARN=${{ steps.terraform_repo.outputs.ACCESS_ROLE_ARN }}
-          cd terraform/main
+          cd terraform/environment
           terraform init -input=false -reconfigure -backend-config="key=state/prs/pr-${PR_NUMBER}.tfstate"
 
           # App Runner auto-deploys on ECR push (auto_deployments_enabled), which can
@@ -112,7 +111,7 @@ jobs:
           # short window. Retry on that specific transient state.
           MAX_ATTEMPTS=12
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
-            if terraform apply -auto-approve -input=false -target=aws_apprunner_service.app -var="env_type=pr" -var="env_id=pr-${PR_NUMBER}" -var="image_identifier=${IMAGE_URI}" -var="access_role_arn=${ACCESS_ROLE_ARN}" -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}" 2>&1 | tee /tmp/tf_apply.log; then
+            if terraform apply -auto-approve -input=false -var="env_type=pr" -var="env_id=pr-${PR_NUMBER}" -var="image_identifier=${IMAGE_URI}" -var="access_role_arn=${ACCESS_ROLE_ARN}" -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}" 2>&1 | tee /tmp/tf_apply.log; then
               break
             fi
             if [ "$attempt" -eq "$MAX_ATTEMPTS" ] || ! grep -q "OPERATION_IN_PROGRESS" /tmp/tf_apply.log; then

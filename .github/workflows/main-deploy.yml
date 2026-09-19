@@ -57,15 +57,12 @@ jobs:
       # Same shared global resources pr-cicd.yml applies (idempotent - already
       # exist by the time this runs, but re-applying is a safe no-op and gets
       # us their outputs without hardcoding them here).
-      - name: Terraform ensure ECR repo and ECR-access role
+      - name: Terraform apply global resources (ECR repo, ECR-access role)
         run: |
-          cd terraform/main
-          terraform init -input=false -backend-config="key=state/global/main.tfstate"
+          cd terraform/global
+          terraform init -input=false
           terraform apply -auto-approve -input=false \
-            -target=aws_ecr_repository.repo \
-            -target=aws_iam_role.apprunner_ecr_access \
-            -target=aws_iam_role_policy_attachment.apprunner_ecr_access \
-            -var="env_type=global" -var="env_id=main" -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}"
+            -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}"
           REPO_URL=$(terraform output -raw repository_url)
           ACCESS_ROLE_ARN=$(terraform output -raw apprunner_ecr_access_role_arn)
           echo "REPO_URL=$REPO_URL" >> "$GITHUB_OUTPUT"
@@ -81,7 +78,7 @@ jobs:
           REPO_URL=${{ steps.terraform_repo.outputs.REPO_URL }}
           IMAGE_TAG=prod
           aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin ${REPO_URL%/*}
-          docker build --build-arg VITE_MSAL_CLIENT_ID=${{ env.AZURE_PROD_WEB_APP_CLIENT_ID }} -t ${REPO_URL}:${IMAGE_TAG} .
+          docker build -t ${REPO_URL}:${IMAGE_TAG} .
           docker push ${REPO_URL}:${IMAGE_TAG}
           echo "IMAGE_URI=${REPO_URL}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
         env:
@@ -92,7 +89,7 @@ jobs:
           set -o pipefail
           IMAGE_URI=${{ steps.build_and_push.outputs.IMAGE_URI }}
           ACCESS_ROLE_ARN=${{ steps.terraform_repo.outputs.ACCESS_ROLE_ARN }}
-          cd terraform/main
+          cd terraform/environment
           terraform init -input=false -reconfigure -backend-config="key=state/prod/main.tfstate"
 
           # Same rationale as the PR pipeline: auto_deployments_enabled means
@@ -100,7 +97,7 @@ jobs:
           # lands, racing this apply.
           MAX_ATTEMPTS=12
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
-            if terraform apply -auto-approve -input=false -target=aws_apprunner_service.app -var="env_type=prod" -var="env_id=main" -var="image_identifier=${IMAGE_URI}" -var="access_role_arn=${ACCESS_ROLE_ARN}" -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}" 2>&1 | tee /tmp/tf_apply.log; then
+            if terraform apply -auto-approve -input=false -var="env_type=prod" -var="env_id=main" -var="image_identifier=${IMAGE_URI}" -var="access_role_arn=${ACCESS_ROLE_ARN}" -var="msal_client_id=${{ env.AZURE_PROD_WEB_APP_CLIENT_ID }}" -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}" 2>&1 | tee /tmp/tf_apply.log; then
               break
             fi
             if [ "$attempt" -eq "$MAX_ATTEMPTS" ] || ! grep -q "OPERATION_IN_PROGRESS" /tmp/tf_apply.log; then
