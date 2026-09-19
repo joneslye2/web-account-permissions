@@ -37,8 +37,8 @@ async function appears(locator: ReturnType<Page['getByRole']>, timeout: number):
   }
 }
 
-test('a real login completes and shows the authenticated app shell', async ({ page }) => {
-  test.setTimeout(90_000);
+test('a real login completes, shows the authenticated app shell, and logout returns to signed-out', async ({ page }) => {
+  test.setTimeout(120_000);
 
   const email = process.env.E2E_TEST_EMAIL;
   const password = process.env.E2E_TEST_PASSWORD;
@@ -81,4 +81,17 @@ test('a real login completes and shows the authenticated app shell', async ({ pa
   // No account-management app / claims API exists yet, so this is the correct,
   // honest state for a real authenticated user today - not a workaround.
   await expect(page.getByText(/authorization data could not be loaded/i)).toBeVisible();
+
+  // Logout: verify the real round trip, not just that the button renders.
+  // MSAL redirects to Entra's end_session_endpoint (postLogoutRedirectUri is
+  // this app's own origin, registered alongside the login redirect URI),
+  // which may show its own interim confirmation before returning here.
+  await page.getByRole('button', { name: /logout/i }).click();
+  await logState(page, 'after clicking logout');
+
+  await page.waitForURL((url) => !url.hostname.includes('ciamlogin.com'), { timeout: 30_000 });
+  await logState(page, 'after logout completes');
+
+  await expect(page.getByRole('button', { name: /login/i })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(/please sign in/i)).toBeVisible();
 });
