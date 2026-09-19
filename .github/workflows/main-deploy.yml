@@ -55,20 +55,19 @@ jobs:
         with:
           terraform_wrapper: false
 
-      # Same shared global resources pr-cicd.yml applies (idempotent - already
-      # exist by the time this runs, but re-applying is a safe no-op and gets
-      # us their outputs without hardcoding them here).
-      - name: Terraform apply global resources (ECR repo, ECR-access role)
-        run: |
-          cd terraform/global
-          terraform init -input=false
-          terraform apply -auto-approve -input=false \
-            -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}"
-          REPO_URL=$(terraform output -raw repository_url)
-          ACCESS_ROLE_ARN=$(terraform output -raw apprunner_ecr_access_role_arn)
-          echo "REPO_URL=$REPO_URL" >> "$GITHUB_OUTPUT"
-          echo "ACCESS_ROLE_ARN=$ACCESS_ROLE_ARN" >> "$GITHUB_OUTPUT"
+      # These global resources are guaranteed to already exist - reaching
+      # main means PR CI (which creates them via terraform/global) already
+      # passed as a merge gate - and both values are fully deterministic
+      # from the naming convention terraform/global uses, so there's
+      # nothing to gain from an `apply` here, only extra latency and a
+      # state-lock round trip. Same deterministic-reconstruction pattern
+      # preview-cleanup.yml already uses for the same values.
+      - name: Resolve global resource references
         id: terraform_repo
+        run: |
+          ACCOUNT_ID="021685463033"
+          echo "REPO_URL=${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${BASE_APP_NAME}-previews" >> "$GITHUB_OUTPUT"
+          echo "ACCESS_ROLE_ARN=arn:aws:iam::${ACCOUNT_ID}:role/${BASE_APP_NAME}-apprunner-ecr-access" >> "$GITHUB_OUTPUT"
         env:
           BASE_APP_NAME: ${{ env.BASE_APP_NAME }}
           AWS_REGION: ${{ env.AWS_REGION }}
