@@ -19,6 +19,6 @@ test('a real login completes, shows the authenticated app shell, and logout retu
   // honest state for a real authenticated user today - not a workaround.
   await expect(page.getByText(/authorization data could not be loaded/i)).toBeVisible();
 
-  await logoutViaEntra(page);
+  await logoutViaEntra(page, creds!.email);
   await expect(page.getByText(/please sign in/i)).toBeVisible();
 });

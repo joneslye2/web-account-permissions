@@ -94,13 +94,20 @@ export async function loginViaEntra(page: Page, creds: TestCredentials): Promise
 
 // Call from the authenticated app shell. Leaves the page on the signed-out
 // view (asserts the Login button is visible).
-export async function logoutViaEntra(page: Page): Promise<void> {
+export async function logoutViaEntra(page: Page, email: string): Promise<void> {
   await page.getByRole('button', { name: /logout/i }).click();
   await logState(page, 'after clicking logout');
 
   // MSAL redirects to Entra's end_session_endpoint (postLogoutRedirectUri is
-  // this app's own origin, registered alongside the login redirect URI),
-  // which may show its own interim confirmation before returning here.
+  // this app's own origin, registered alongside the login redirect URI).
+  // Entra shows a "Pick an account - which account do you want to sign out
+  // of?" confirmation requiring an explicit click before it completes.
+  const accountTile = page.getByText(email, { exact: false });
+  if (await appears(accountTile, 15_000)) {
+    await accountTile.click();
+    await logState(page, 'after confirming sign-out account');
+  }
+
   await page.waitForURL((url) => !url.hostname.includes('ciamlogin.com'), { timeout: 30_000 });
   await logState(page, 'after logout completes');
 
