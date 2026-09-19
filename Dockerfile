@@ -3,6 +3,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+# Empty by default (falsy in authConfig.js's `|| DEFAULT_CLIENT_ID`), so PR
+# preview builds keep using the non-prod client ID unless overridden.
+ARG VITE_MSAL_CLIENT_ID=""
+ENV VITE_MSAL_CLIENT_ID=$VITE_MSAL_CLIENT_ID
 RUN npm run build
 
 FROM node:24-alpine AS runtime

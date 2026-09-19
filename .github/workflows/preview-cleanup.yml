@@ -4,11 +4,15 @@ on:
   pull_request:
     types: [closed]
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to clean up (for manual testing without closing the PR)'
+        required: true
 
 jobs:
   cleanup:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.merged == false || github.event.pull_request.merged == true
     permissions:
       id-token: write
       contents: read
@@ -28,7 +32,7 @@ jobs:
       - name: Compute PR info and repo name
         id: info
         run: |
-          PR_NUMBER=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
+          PR_NUMBER=$(jq -r '.pull_request.number // .inputs.pr_number' "$GITHUB_EVENT_PATH")
           NAME_PREFIX=$(echo "avp" | tr '[:upper:]' '[:lower:]' | sed 's/_/-/g')
           REPO_NAME="${NAME_PREFIX}-previews"
           echo "PR_NUMBER=$PR_NUMBER" >> "$GITHUB_OUTPUT"

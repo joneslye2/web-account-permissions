@@ -10,9 +10,9 @@ permissions:
 
 env:
   AWS_REGION: eu-west-2
-  BASE_APP_NAME: web-account-permissions
-  PROD_ENV_NAME: prod
-  PR_ENV_PREFIX: pr
+  BASE_APP_NAME: avp
+  AZURE_TENANT_ID: 6255c754-e30b-4758-bad0-d9051e73013b
+  AZURE_PROD_WEB_APP_CLIENT_ID: a4c33926-3866-4824-a980-1b5c6faea83d
 
 jobs:
   test:
@@ -43,19 +43,118 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials via OIDC
+      - name: Configure AWS credentials (assume OIDC role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::021685463033:role/matthew-avp-github-oidc-role
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Set environment name
-        id: envname
-        run: |
-          echo "value=${{ env.PROD_ENV_NAME }}" >> "$GITHUB_OUTPUT"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false
 
-      - name: Show environment summary
+      # Same shared global resources pr-cicd.yml applies (idempotent - already
+      # exist by the time this runs, but re-applying is a safe no-op and gets
+      # us their outputs without hardcoding them here).
+      - name: Terraform ensure ECR repo and ECR-access role
         run: |
-          echo "Environment: ${{ steps.envname.outputs.value }}"
-          echo "Web app client id (prod): a4c33926-3866-4824-a980-1b5c6faea83d"
-          echo "Claims app client id (prod): 7435fe37-9648-427f-b315-bb33a0255e38"
+          cd terraform/main
+          terraform init -input=false -backend-config="key=state/global/main.tfstate"
+          terraform apply -auto-approve -input=false \
+            -target=aws_ecr_repository.repo \
+            -target=aws_iam_role.apprunner_ecr_access \
+            -target=aws_iam_role_policy_attachment.apprunner_ecr_access \
+            -var="env_type=global" -var="env_id=main" -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}"
+          REPO_URL=$(terraform output -raw repository_url)
+          ACCESS_ROLE_ARN=$(terraform output -raw apprunner_ecr_access_role_arn)
+          echo "REPO_URL=$REPO_URL" >> "$GITHUB_OUTPUT"
+          echo "ACCESS_ROLE_ARN=$ACCESS_ROLE_ARN" >> "$GITHUB_OUTPUT"
+        id: terraform_repo
+        env:
+          BASE_APP_NAME: ${{ env.BASE_APP_NAME }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+
+      - name: Build and push Docker image to ECR
+        id: build_and_push
+        run: |
+          REPO_URL=${{ steps.terraform_repo.outputs.REPO_URL }}
+          IMAGE_TAG=prod
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin ${REPO_URL%/*}
+          docker build --build-arg VITE_MSAL_CLIENT_ID=${{ env.AZURE_PROD_WEB_APP_CLIENT_ID }} -t ${REPO_URL}:${IMAGE_TAG} .
+          docker push ${REPO_URL}:${IMAGE_TAG}
+          echo "IMAGE_URI=${REPO_URL}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+
+      - name: Terraform apply production App Runner service
+        run: |
+          set -o pipefail
+          IMAGE_URI=${{ steps.build_and_push.outputs.IMAGE_URI }}
+          ACCESS_ROLE_ARN=${{ steps.terraform_repo.outputs.ACCESS_ROLE_ARN }}
+          cd terraform/main
+          terraform init -input=false -reconfigure -backend-config="key=state/prod/main.tfstate"
+
+          # Same rationale as the PR pipeline: auto_deployments_enabled means
+          # App Runner can start its own rollout the moment the new image
+          # lands, racing this apply.
+          MAX_ATTEMPTS=12
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            if terraform apply -auto-approve -input=false -target=aws_apprunner_service.app -var="env_type=prod" -var="env_id=main" -var="image_identifier=${IMAGE_URI}" -var="access_role_arn=${ACCESS_ROLE_ARN}" -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}" 2>&1 | tee /tmp/tf_apply.log; then
+              break
+            fi
+            if [ "$attempt" -eq "$MAX_ATTEMPTS" ] || ! grep -q "OPERATION_IN_PROGRESS" /tmp/tf_apply.log; then
+              exit 1
+            fi
+            echo "App Runner service busy (OPERATION_IN_PROGRESS), retrying in 30s (attempt ${attempt}/${MAX_ATTEMPTS})..."
+            sleep 30
+          done
+
+          PROD_URL="https://$(terraform output -raw preview_url)"
+          echo "PROD_URL=$PROD_URL" >> "$GITHUB_OUTPUT"
+        id: terraform_apply
+        env:
+          BASE_APP_NAME: ${{ env.BASE_APP_NAME }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+
+      - name: Azure login (OIDC, for Entra redirect URI automation)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_GRAPH_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      # Idempotent (unique-merges into the existing list), and the prod URL
+      # is stable across redeploys, so this only actually changes anything
+      # the first time the prod App Runner service is ever created.
+      - name: Register production redirect URI in Entra
+        run: |
+          PROD_URL=${{ steps.terraform_apply.outputs.PROD_URL }}
+          OBJECT_ID=$(az rest --method GET \
+            --url "https://graph.microsoft.com/v1.0/applications?\$filter=appId eq '${WEB_APP_CLIENT_ID}'" \
+            --query "value[0].id" -o tsv)
+          CURRENT_URIS=$(az rest --method GET \
+            --url "https://graph.microsoft.com/v1.0/applications/${OBJECT_ID}" \
+            --query "spa.redirectUris" -o json)
+          NEW_URIS=$(echo "$CURRENT_URIS" | jq -c --arg url "$PROD_URL" '(. // []) + [$url] | unique')
+          az rest --method PATCH \
+            --url "https://graph.microsoft.com/v1.0/applications/${OBJECT_ID}" \
+            --headers "Content-Type=application/json" \
+            --body "$(jq -nc --argjson uris "$NEW_URIS" '{spa: {redirectUris: $uris}}')"
+        env:
+          WEB_APP_CLIENT_ID: ${{ env.AZURE_PROD_WEB_APP_CLIENT_ID }}
+
+      - name: Smoke check production URL
+        run: |
+          PROD_URL=${{ steps.terraform_apply.outputs.PROD_URL }}
+          for attempt in 1 2 3 4 5; do
+            STATUS=$(curl -sS -o /dev/null -w '%{http_code}' "$PROD_URL" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Production is up: $PROD_URL"
+              exit 0
+            fi
+            echo "Got HTTP $STATUS from $PROD_URL, retrying in 10s (attempt ${attempt}/5)..."
+            sleep 10
+          done
+          echo "Production did not return 200 after 5 attempts" >&2
+          exit 1
