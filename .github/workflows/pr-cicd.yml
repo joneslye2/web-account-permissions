@@ -2,7 +2,15 @@ name: PR CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, closed]
+    # Deliberately not `closed`: nothing in this workflow's steps checks the
+    # specific action type (they all gate on github.event_name ==
+    # 'pull_request' alone), so a closed/merged PR would run the full
+    # build-deploy-test cycle and recreate the very preview
+    # preview-cleanup.yml is destroying in response to the same event -
+    # confirmed live: it raced cleanup's destroy and won, leaving PR-1's
+    # App Runner service running (and Entra redirect URI re-registered)
+    # after cleanup had already reported success.
+    types: [opened, synchronize, reopened]
     branches: [main]
 
 jobs:

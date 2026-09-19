@@ -37,6 +37,7 @@ jobs:
           REPO_NAME="${NAME_PREFIX}-previews"
           echo "PR_NUMBER=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "REPO_NAME=$REPO_NAME" >> "$GITHUB_OUTPUT"
+          echo "REPO_URL=021685463033.dkr.ecr.eu-west-2.amazonaws.com/${REPO_NAME}" >> "$GITHUB_OUTPUT"
         env:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
 
@@ -54,10 +55,18 @@ jobs:
           PREVIEW_URL="https://$(terraform output -raw preview_url 2>/dev/null || true)"
           echo "PREVIEW_URL=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
 
+      # Gated on there actually being something to destroy (same signal the
+      # Azure steps below already use), and deliberately no `|| true` on the
+      # destroy itself: that masked a real bug once already (image_identifier
+      # below used to be a bare repo name, which fails App Runner's own
+      # image_identifier regex validation - Terraform errored immediately,
+      # and `|| true` turned that failure into a silent no-op that still
+      # reported step success, leaving the service running).
       - name: Terraform destroy preview (App Runner)
+        if: ${{ steps.lookup.outputs.PREVIEW_URL != 'https://' }}
         run: |
           PR_NUMBER=${{ steps.info.outputs.PR_NUMBER }}
-          REPO_NAME=${{ steps.info.outputs.REPO_NAME }}
+          REPO_URL=${{ steps.info.outputs.REPO_URL }}
           cd terraform/environment
           # access_role_arn has no default (unlike msal_client_id) but its
           # actual value doesn't matter for a destroy - only real resources
@@ -65,10 +74,10 @@ jobs:
           terraform destroy -auto-approve -input=false \
             -var="env_type=pr" \
             -var="env_id=pr-${PR_NUMBER}" \
-            -var="image_identifier=${REPO_NAME}:pr-${PR_NUMBER}" \
+            -var="image_identifier=${REPO_URL}:pr-${PR_NUMBER}" \
             -var="access_role_arn=arn:aws:iam::021685463033:role/avp-apprunner-ecr-access" \
             -var="base_app_name=avp" \
-            -var="aws_region=eu-west-2" || true
+            -var="aws_region=eu-west-2"
 
       # Skipped for merged PRs: preview-cleanup (pull_request: closed) and
       # main-deploy (push: branches: [main]) both fire from the same merge
