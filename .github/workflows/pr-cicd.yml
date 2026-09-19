@@ -187,3 +187,5 @@ jobs:
           npx playwright test --config=playwright.config.ts
         env:
           PREVIEW_URL: ${{ steps.terraform_apply.outputs.PREVIEW_URL }}
+          E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
+          E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
