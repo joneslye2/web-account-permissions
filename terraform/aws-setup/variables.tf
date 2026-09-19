@@ -8,7 +8,10 @@ variable "common_tags" {
   description = "Common tags to apply to all created resources."
   type        = map(string)
   default = {
-    Project   = "web-account-permissions"
-    ManagedBy = "terraform"
+    Project     = "web-account-permissions"
+    Owner       = "joneslye2"
+    ManagedBy   = "terraform"
+    Environment = "shared"
+    Increment   = "1"
   }
 }

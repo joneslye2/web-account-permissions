@@ -1,0 +1,201 @@
+name: PR CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    env:
+      BASE_APP_NAME: avp
+      AWS_REGION: eu-west-2
+      AZURE_TENANT_ID: 6255c754-e30b-4758-bad0-d9051e73013b
+      AZURE_NON_PROD_WEB_APP_CLIENT_ID: 671e9818-dea5-4b0d-ac43-7eaf5470894d
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps || true
+
+      - name: Run unit tests with coverage
+        run: npm run test:coverage
+
+      - name: Build app
+        run: npm run build
+
+      - name: Get PR number
+        if: ${{ github.event_name == 'pull_request' }}
+        id: pr_info
+        run: |
+          PR_NUMBER=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
+          echo "PR_NUMBER=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+
+      - name: Configure AWS credentials (assume OIDC role)
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Remote state backend (bucket/table) is hardcoded in each module's
+      # backend.tf; terraform/global's key is fixed there too, while
+      # terraform/environment's varies per environment (-backend-config below)
+
+      - name: Setup Terraform
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform apply global resources (ECR repo, ECR-access role)
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          PR_NUMBER=${{ steps.pr_info.outputs.PR_NUMBER }}
+          cd terraform/global
+          terraform init -input=false
+          terraform apply -auto-approve -input=false \
+            -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}"
+          REPO_URL=$(terraform output -raw repository_url)
+          ACCESS_ROLE_ARN=$(terraform output -raw apprunner_ecr_access_role_arn)
+          echo "REPO_URL=$REPO_URL" >> "$GITHUB_OUTPUT"
+          echo "ACCESS_ROLE_ARN=$ACCESS_ROLE_ARN" >> "$GITHUB_OUTPUT"
+        id: terraform_repo
+        env:
+          BASE_APP_NAME: ${{ env.BASE_APP_NAME }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+
+      - name: Build and push Docker image to ECR
+        if: ${{ github.event_name == 'pull_request' }}
+        id: build_and_push
+        run: |
+          PR_NUMBER=${{ steps.pr_info.outputs.PR_NUMBER }}
+          REPO_URL=${{ steps.terraform_repo.outputs.REPO_URL }}
+          IMAGE_TAG=pr-${PR_NUMBER}
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin ${REPO_URL%/*}
+          docker build -t ${REPO_URL}:${IMAGE_TAG} .
+          docker push ${REPO_URL}:${IMAGE_TAG}
+          echo "IMAGE_URI=${REPO_URL}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+
+      - name: Terraform create App Runner service
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          set -o pipefail
+          PR_NUMBER=${{ steps.pr_info.outputs.PR_NUMBER }}
+          IMAGE_URI=${{ steps.build_and_push.outputs.IMAGE_URI }}
+          ACCESS_ROLE_ARN=${{ steps.terraform_repo.outputs.ACCESS_ROLE_ARN }}
+          cd terraform/environment
+          terraform init -input=false -reconfigure -backend-config="key=state/prs/pr-${PR_NUMBER}.tfstate"
+
+          # App Runner auto-deploys on ECR push (auto_deployments_enabled), which can
+          # race with this apply and leave the service OPERATION_IN_PROGRESS for a
+          # short window. Retry on that specific transient state.
+          MAX_ATTEMPTS=12
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            if terraform apply -auto-approve -input=false -var="env_type=pr" -var="env_id=pr-${PR_NUMBER}" -var="image_identifier=${IMAGE_URI}" -var="access_role_arn=${ACCESS_ROLE_ARN}" -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}" 2>&1 | tee /tmp/tf_apply.log; then
+              break
+            fi
+            if [ "$attempt" -eq "$MAX_ATTEMPTS" ] || ! grep -q "OPERATION_IN_PROGRESS" /tmp/tf_apply.log; then
+              exit 1
+            fi
+            echo "App Runner service busy (OPERATION_IN_PROGRESS), retrying in 30s (attempt ${attempt}/${MAX_ATTEMPTS})..."
+            sleep 30
+          done
+
+          PREVIEW_URL="https://$(terraform output -raw preview_url)"
+          echo "PREVIEW_URL=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
+        id: terraform_apply
+        env:
+          BASE_APP_NAME: ${{ env.BASE_APP_NAME }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+        # note: IMAGE_URI is pulled from previous step outputs
+
+      - name: Azure login (OIDC, for Entra redirect URI automation)
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_GRAPH_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Register PR preview redirect URI in Entra
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          PREVIEW_URL=${{ steps.terraform_apply.outputs.PREVIEW_URL }}
+          OBJECT_ID=$(az rest --method GET \
+            --url "https://graph.microsoft.com/v1.0/applications?\$filter=appId eq '${WEB_APP_CLIENT_ID}'" \
+            --query "value[0].id" -o tsv)
+          CURRENT_URIS=$(az rest --method GET \
+            --url "https://graph.microsoft.com/v1.0/applications/${OBJECT_ID}" \
+            --query "spa.redirectUris" -o json)
+          NEW_URIS=$(echo "$CURRENT_URIS" | jq -c --arg url "$PREVIEW_URL" '(. // []) + [$url] | unique')
+          az rest --method PATCH \
+            --url "https://graph.microsoft.com/v1.0/applications/${OBJECT_ID}" \
+            --headers "Content-Type=application/json" \
+            --body "$(jq -nc --argjson uris "$NEW_URIS" '{spa: {redirectUris: $uris}}')"
+        env:
+          WEB_APP_CLIENT_ID: ${{ env.AZURE_NON_PROD_WEB_APP_CLIENT_ID }}
+
+      - name: Post or update PR comment with preview URL
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          PR_NUMBER=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
+          PREVIEW_URL=${{ steps.terraform_apply.outputs.PREVIEW_URL }}
+          MARKER="<!-- avp-preview-url-comment -->"
+          BODY=$(jq -nc --arg marker "$MARKER" --arg url "$PREVIEW_URL" '{body: ($marker + "\nPreview environment: " + $url)}')
+          API="https://api.github.com/repos/${{ github.repository }}"
+
+          EXISTING_ID=$(curl -sS -f -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
+            "${API}/issues/${PR_NUMBER}/comments" \
+            | jq -r --arg marker "$MARKER" '[.[] | select(.body | startswith($marker))][0].id // empty')
+
+          if [ -n "$EXISTING_ID" ]; then
+            curl -sS -f -X PATCH -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
+              -d "$BODY" "${API}/issues/comments/${EXISTING_ID}" >/dev/null
+          else
+            curl -sS -f -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
+              -d "$BODY" "${API}/issues/${PR_NUMBER}/comments" >/dev/null
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+
+      - name: Run UI happy-path (if PREVIEW_URL available)
+        if: ${{ steps.terraform_apply.outputs.PREVIEW_URL }}
+        run: |
+          echo "Running Playwright e2e against $PREVIEW_URL"
+          npx playwright test --config=playwright.config.ts
+        env:
+          PREVIEW_URL: ${{ steps.terraform_apply.outputs.PREVIEW_URL }}
+          E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
+          E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
+          E2E_TEST_AUTH_SECRET: ${{ secrets.E2E_TEST_AUTH_SECRET }}
+
+      - name: Upload Playwright report (on failure)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7

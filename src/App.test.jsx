@@ -1,55 +1,47 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import App from './App';
 import { computeAuthState } from './auth';
 
-describe('auth state logic', () => {
-  it('marks unauthenticated users as requiring login', () => {
-    expect(computeAuthState(null)).toMatchObject({
-      isAuthenticated: false,
-      hasServiceAccess: false,
-      status: 'login_required',
-    });
-  });
+describe('App (presentational)', () => {
+  it('renders login and sign-in notice for an unauthenticated user, and calls onLogin when clicked', () => {
+    const onLogin = vi.fn();
+    const authState = computeAuthState({ isAuthenticated: false });
+    render(<App authState={authState} onLogin={onLogin} onLogout={vi.fn()} />);
 
-  it('marks authenticated users without service access as blocked but visible', () => {
-    const state = computeAuthState({
-      id: 'u-1',
-      serviceARoles: [],
-      serviceBRoles: [],
-      category: 'open',
-    });
-
-    expect(state).toMatchObject({
-      isAuthenticated: true,
-      hasServiceAccess: false,
-      status: 'no_service_access',
-    });
-  });
-});
-
-describe('home page render', () => {
-  it('renders login and sign-in notice for an unauthenticated user', () => {
-    render(<App user={null} />);
-
-    expect(screen.getByRole('button', { name: /login/i })).toBeInTheDocument();
     expect(screen.getByText(/please sign in/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /login/i }));
+    expect(onLogin).toHaveBeenCalledTimes(1);
   });
 
-  it('renders logout and authenticated shell for a signed-in user', () => {
-    render(
-      <App
-        user={{
-          id: 'u-2',
-          name: 'Jordan',
-          serviceARoles: ['create'],
-          serviceBRoles: [],
-          category: 'confidential',
-        }}
-      />
-    );
+  it('renders logout and the service shell for an authenticated user with access, and calls onLogout when clicked', () => {
+    const onLogout = vi.fn();
+    const authState = computeAuthState({
+      isAuthenticated: true,
+      claims: { serviceARoles: ['create'], serviceBRoles: [], category: 'confidential' },
+    });
+    render(<App authState={authState} onLogin={vi.fn()} onLogout={onLogout} />);
 
-    expect(screen.getByRole('button', { name: /logout/i })).toBeInTheDocument();
     expect(screen.getByText(/service a/i)).toBeInTheDocument();
     expect(screen.getByText(/service b/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /logout/i }));
+    expect(onLogout).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders logout-only messaging when claims failed to load', () => {
+    const authState = computeAuthState({ isAuthenticated: true, claims: null, claimsError: true });
+    render(<App authState={authState} onLogin={vi.fn()} onLogout={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: /logout/i })).toBeInTheDocument();
+    expect(screen.getByText(/authorization data could not be loaded/i)).toBeInTheDocument();
+  });
+
+  it('renders a clear status for an authenticated user with no service access, not a blank screen', () => {
+    const authState = computeAuthState({
+      isAuthenticated: true,
+      claims: { serviceARoles: [], serviceBRoles: [], category: 'open' },
+    });
+    render(<App authState={authState} onLogin={vi.fn()} onLogout={vi.fn()} />);
+
+    expect(screen.getByText('No service access')).toBeInTheDocument();
   });
 });

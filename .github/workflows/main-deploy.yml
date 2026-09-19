@@ -1,0 +1,181 @@
+name: Main Deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
+
+env:
+  AWS_REGION: eu-west-2
+  BASE_APP_NAME: avp
+  AZURE_TENANT_ID: 6255c754-e30b-4758-bad0-d9051e73013b
+  AZURE_PROD_WEB_APP_CLIENT_ID: a4c33926-3866-4824-a980-1b5c6faea83d
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests with coverage
+        run: npm run test:coverage
+
+      - name: Build app
+        run: npm run build
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (assume OIDC role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false
+
+      # These global resources are guaranteed to already exist - reaching
+      # main means PR CI (which creates them via terraform/global) already
+      # passed as a merge gate - and both values are fully deterministic
+      # from the naming convention terraform/global uses, so there's
+      # nothing to gain from an `apply` here, only extra latency and a
+      # state-lock round trip. Same deterministic-reconstruction pattern
+      # preview-cleanup.yml already uses for the same values.
+      - name: Resolve global resource references
+        id: terraform_repo
+        run: |
+          ACCOUNT_ID="021685463033"
+          echo "REPO_URL=${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${BASE_APP_NAME}-previews" >> "$GITHUB_OUTPUT"
+          echo "ACCESS_ROLE_ARN=arn:aws:iam::${ACCOUNT_ID}:role/${BASE_APP_NAME}-apprunner-ecr-access" >> "$GITHUB_OUTPUT"
+        env:
+          BASE_APP_NAME: ${{ env.BASE_APP_NAME }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+
+      # No rebuild: re-tag the exact image pr-cicd.yml already built and
+      # tested for the merged PR. "Trust the image tested in non-prod"
+      # only means something if prod runs the identical bytes, not a
+      # fresh build of the same source - a rebuild, even a deterministic
+      # one, is a different artifact.
+      - name: Find merged PR and promote its image
+        id: promote_image
+        run: |
+          REPO_URL=${{ steps.terraform_repo.outputs.REPO_URL }}
+          REPO_NAME="${REPO_URL##*/}"
+
+          PR_NUMBER=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number')
+          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+            echo "No merged PR found for commit ${{ github.sha }} - nothing to promote" >&2
+            exit 1
+          fi
+          echo "Promoting image from PR #$PR_NUMBER (already built and tested by pr-cicd.yml)"
+
+          MANIFEST=$(aws ecr batch-get-image --repository-name "$REPO_NAME" --image-ids imageTag=pr-${PR_NUMBER} --query 'images[0].imageManifest' --output text)
+          if [ -z "$MANIFEST" ] || [ "$MANIFEST" = "None" ]; then
+            echo "No image found in ECR for tag pr-${PR_NUMBER}" >&2
+            exit 1
+          fi
+          aws ecr put-image --repository-name "$REPO_NAME" --image-tag prod --image-manifest "$MANIFEST" >/dev/null
+
+          # Only delete pr-N's tag after prod's tag is confirmed created -
+          # preview-cleanup.yml deliberately skips deleting it for merged
+          # PRs so there's no race between the two; this is where that
+          # cleanup actually happens, strictly after promotion succeeded.
+          aws ecr batch-delete-image --repository-name "$REPO_NAME" --image-ids imageTag=pr-${PR_NUMBER} >/dev/null || true
+
+          echo "IMAGE_URI=${REPO_URL}:prod" >> "$GITHUB_OUTPUT"
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Terraform apply production App Runner service
+        run: |
+          set -o pipefail
+          IMAGE_URI=${{ steps.promote_image.outputs.IMAGE_URI }}
+          ACCESS_ROLE_ARN=${{ steps.terraform_repo.outputs.ACCESS_ROLE_ARN }}
+          cd terraform/environment
+          terraform init -input=false -reconfigure -backend-config="key=state/prod/main.tfstate"
+
+          # Same rationale as the PR pipeline: auto_deployments_enabled means
+          # App Runner can start its own rollout the moment the new image
+          # lands, racing this apply.
+          MAX_ATTEMPTS=12
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            if terraform apply -auto-approve -input=false -var="env_type=prod" -var="env_id=main" -var="image_identifier=${IMAGE_URI}" -var="access_role_arn=${ACCESS_ROLE_ARN}" -var="msal_client_id=${{ env.AZURE_PROD_WEB_APP_CLIENT_ID }}" -var="base_app_name=${BASE_APP_NAME}" -var="aws_region=${AWS_REGION}" 2>&1 | tee /tmp/tf_apply.log; then
+              break
+            fi
+            if [ "$attempt" -eq "$MAX_ATTEMPTS" ] || ! grep -q "OPERATION_IN_PROGRESS" /tmp/tf_apply.log; then
+              exit 1
+            fi
+            echo "App Runner service busy (OPERATION_IN_PROGRESS), retrying in 30s (attempt ${attempt}/${MAX_ATTEMPTS})..."
+            sleep 30
+          done
+
+          PROD_URL="https://$(terraform output -raw preview_url)"
+          echo "PROD_URL=$PROD_URL" >> "$GITHUB_OUTPUT"
+        id: terraform_apply
+        env:
+          BASE_APP_NAME: ${{ env.BASE_APP_NAME }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+
+      - name: Azure login (OIDC, for Entra redirect URI automation)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_GRAPH_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      # Idempotent (unique-merges into the existing list), and the prod URL
+      # is stable across redeploys, so this only actually changes anything
+      # the first time the prod App Runner service is ever created.
+      - name: Register production redirect URI in Entra
+        run: |
+          PROD_URL=${{ steps.terraform_apply.outputs.PROD_URL }}
+          OBJECT_ID=$(az rest --method GET \
+            --url "https://graph.microsoft.com/v1.0/applications?\$filter=appId eq '${WEB_APP_CLIENT_ID}'" \
+            --query "value[0].id" -o tsv)
+          CURRENT_URIS=$(az rest --method GET \
+            --url "https://graph.microsoft.com/v1.0/applications/${OBJECT_ID}" \
+            --query "spa.redirectUris" -o json)
+          NEW_URIS=$(echo "$CURRENT_URIS" | jq -c --arg url "$PROD_URL" '(. // []) + [$url] | unique')
+          az rest --method PATCH \
+            --url "https://graph.microsoft.com/v1.0/applications/${OBJECT_ID}" \
+            --headers "Content-Type=application/json" \
+            --body "$(jq -nc --argjson uris "$NEW_URIS" '{spa: {redirectUris: $uris}}')"
+        env:
+          WEB_APP_CLIENT_ID: ${{ env.AZURE_PROD_WEB_APP_CLIENT_ID }}
+
+      - name: Smoke check production URL
+        run: |
+          PROD_URL=${{ steps.terraform_apply.outputs.PROD_URL }}
+          for attempt in 1 2 3 4 5; do
+            STATUS=$(curl -sS -o /dev/null -w '%{http_code}' "$PROD_URL" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Production is up: $PROD_URL"
+              exit 0
+            fi
+            echo "Got HTTP $STATUS from $PROD_URL, retrying in 10s (attempt ${attempt}/5)..."
+            sleep 10
+          done
+          echo "Production did not return 200 after 5 attempts" >&2
+          exit 1

@@ -1,5 +1,5 @@
-export function computeAuthState(user) {
-  if (!user) {
+export function computeAuthState({ isAuthenticated, claims, claimsError } = {}) {
+  if (!isAuthenticated) {
     return {
       isAuthenticated: false,
       hasServiceAccess: false,
@@ -8,10 +8,28 @@ export function computeAuthState(user) {
     };
   }
 
+  if (claimsError) {
+    return {
+      isAuthenticated: true,
+      hasServiceAccess: false,
+      status: 'claims_unavailable',
+      message: 'You are signed in, but your authorization data could not be loaded.',
+    };
+  }
+
+  if (!claims) {
+    return {
+      isAuthenticated: true,
+      hasServiceAccess: false,
+      status: 'claims_loading',
+      message: 'Loading your access...',
+    };
+  }
+
   const hasServiceAccess = Boolean(
-    (user.serviceARoles && user.serviceARoles.length > 0) ||
-      (user.serviceBRoles && user.serviceBRoles.length > 0) ||
-      user.category === 'confidential'
+    (claims.serviceARoles && claims.serviceARoles.length > 0) ||
+      (claims.serviceBRoles && claims.serviceBRoles.length > 0) ||
+      claims.category === 'confidential'
   );
 
   return {
