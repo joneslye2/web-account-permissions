@@ -1,13 +1,19 @@
 import { test, expect } from '@playwright/test';
 
-test('home shows login for unauthenticated user', async ({ page }) => {
+// Increment 1 acceptance criterion (increment-plan.md): "An unauthenticated
+// user sees only login and the unsupported/denied status area where
+// relevant." See README.md for the full criteria -> test mapping.
+test('AC: an unauthenticated user sees only login and a status message', async ({ page }) => {
   await page.goto('/');
 
   await expect(page.getByRole('button', { name: /login/i })).toBeVisible();
   await expect(page.getByText(/please sign in/i)).toBeVisible();
 });
 
-test('clicking login redirects to the Entra authority with the expected client', async ({ page }) => {
+// Not an acceptance criterion itself - verifies the login button's redirect
+// actually reaches the real Entra tenant with a registered redirect URI,
+// which the AC above (and login.spec.ts) assume works.
+test('login redirect reaches the real Entra tenant with the expected client', async ({ page }) => {
   await page.goto('/');
 
   await Promise.all([
