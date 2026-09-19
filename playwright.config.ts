@@ -7,7 +7,9 @@ export default defineConfig({
     baseURL: process.env.PREVIEW_URL || process.env.BASE_URL || 'http://localhost:5173',
     headless: true,
     viewport: { width: 1280, height: 720 },
+    screenshot: 'only-on-failure',
   },
+  reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
   ],
