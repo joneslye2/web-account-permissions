@@ -70,7 +70,17 @@ jobs:
             -var="base_app_name=avp" \
             -var="aws_region=eu-west-2" || true
 
+      # Skipped for merged PRs: preview-cleanup (pull_request: closed) and
+      # main-deploy (push: branches: [main]) both fire from the same merge
+      # event as independent, unordered workflow runs. Deleting the pr-N
+      # tag here could race main-deploy's image-promotion lookup, which
+      # depends on that exact tag still existing. main-deploy deletes it
+      # itself once promotion has actually succeeded. Only closed-without-
+      # merging PRs (nothing will ever promote that image) get cleaned up
+      # here; workflow_dispatch (manual testing) also cleans up since it's
+      # never a real merge.
       - name: Delete ECR image
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == false }}
         run: |
           PR_NUMBER=${{ steps.info.outputs.PR_NUMBER }}
           REPO_NAME=${{ steps.info.outputs.REPO_NAME }}

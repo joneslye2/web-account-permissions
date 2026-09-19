@@ -97,6 +97,12 @@ jobs:
           fi
           aws ecr put-image --repository-name "$REPO_NAME" --image-tag prod --image-manifest "$MANIFEST" >/dev/null
 
+          # Only delete pr-N's tag after prod's tag is confirmed created -
+          # preview-cleanup.yml deliberately skips deleting it for merged
+          # PRs so there's no race between the two; this is where that
+          # cleanup actually happens, strictly after promotion succeeded.
+          aws ecr batch-delete-image --repository-name "$REPO_NAME" --image-ids imageTag=pr-${PR_NUMBER} >/dev/null || true
+
           echo "IMAGE_URI=${REPO_URL}:prod" >> "$GITHUB_OUTPUT"
         env:
           AWS_REGION: ${{ env.AWS_REGION }}
